@@ -1,5 +1,5 @@
 """
-Configuration for the Team Success Agent.
+Configuration for the Job History Agent.
 
 Best practice: set these values via environment variables rather than
 hard-coding them here. Copy .env.example to .env and fill in your values,

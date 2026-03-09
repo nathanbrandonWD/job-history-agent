@@ -41,7 +41,7 @@ class WorkdayMCPClient:
     """
     Stateful MCP client that:
       - Holds ASU OAuth credentials (client_id / client_secret / refresh_token)
-      - Auto-refreshes the access token before it expires (10-min TTL)
+      - Auto-refreshes the access token before it expires (uses expires_in from token response)
       - Sends JSON-RPC 2.0 calls to the Workday MCP endpoint
     """
 
@@ -142,7 +142,7 @@ class WorkdayMCPClient:
         Invoke a Workday MCP tool.
 
         Args:
-            tool_name:  Exact tool name (e.g. "createGoal")
+            tool_name:  Exact tool name (e.g. "manageJobHistory")
             arguments:  Dict matching the tool's input schema
 
         Returns:

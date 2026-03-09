@@ -1,0 +1,59 @@
+{
+  "name": "Job History Agent v1",
+  "description": "An intelligent HR co-pilot for adding and updating worker job history records in Workday.",
+  "provider": {
+    "id": "Provider=SELF-BUILT"
+  },
+  "url": "https://agent.workday.com",
+  "platform": {
+    "id": "Platform=OTHER"
+  },
+  "skills": [
+    {
+      "id": "job_history_1",
+      "name": "Job History Management",
+      "description": "Adds and updates job history entries for workers, submitting the Manage Job History business process.",
+      "inputModes": [
+        {
+          "type": "application/json"
+        }
+      ],
+      "outputModes": [
+        {
+          "type": "application/json"
+        }
+      ]
+    }
+  ],
+  "workdayConfig": [
+    {
+      "skillId": "job_history_1",
+      "executionMode": {
+        "id": "Mode=Delegate"
+      },
+      "workdayResources": [
+        {
+          "tool_name": "getWorkers",
+          "description": "Get Workers",
+          "agent_resource": {
+            "id": "94914bb1185d10000de91f2013e70032"
+          }
+        },
+        {
+          "tool_name": "manageJobHistory",
+          "description": "Manage Job History",
+          "agent_resource": {
+            "id": "939b097c68df100015371634996f0000"
+          }
+        }
+      ]
+    }
+  ],
+  "capabilities": {
+    "stateTransitionHistory": false,
+    "streaming": false,
+    "pushNotifications": false
+  },
+  "supportsAuthenticatedExtendedCard": false,
+  "version": "v1"
+}

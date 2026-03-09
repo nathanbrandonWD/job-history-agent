@@ -255,9 +255,10 @@ if not refresh_token:
     print(payload)
     sys.exit(1)
 
-# ── Step 5: Persist new refresh token to .env ────────────────────────────────
+# ── Step 5: Persist new tokens to .env ───────────────────────────────────────
 
 _update_env_value("ASU_REFRESH_TOKEN", refresh_token)
+_update_env_value("ASU_ACCESS_TOKEN", access_token)
 
 print("\n─────────────────────────────────────────────────────")
 print("  Token refresh complete!")
