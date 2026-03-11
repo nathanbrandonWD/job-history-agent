@@ -49,8 +49,8 @@ Final response to user
 - ASU OAuth credentials (client_id, client_secret, refresh_token)
 - Callback URI registered on the OAuth client: `https://localhost:8888/callback`
 
-> **Workday Setup Status:** Agent definition not yet registered. See `CURSOR.md` for
-> the tool WID and placeholder details to complete before first run.
+> **Workday Setup Status:** Register your agent in Workday and obtain ASU credentials
+> before first run. See the *Available Tools* section below for required tool WIDs.
 
 ### 2. Install dependencies
 
@@ -72,7 +72,7 @@ cp .env.example .env
 | `AZURE_OPENAI_API_KEY` | Your Azure OpenAI API key |
 | `AZURE_OPENAI_DEPLOYMENT_NAME` | GPT-4o deployment name |
 | `AZURE_OPENAI_API_VERSION` | API version (e.g. `2024-12-01-preview`) |
-| `WORKDAY_TENANT` | Your Workday tenant, e.g. `wday_wcpdev4` |
+| `WORKDAY_TENANT` | Your Workday tenant identifier, e.g. `your_tenant_id` |
 | `ASU_CLIENT_ID` | ASU OAuth client ID |
 | `ASU_CLIENT_SECRET` | ASU OAuth client secret |
 | `ASU_REFRESH_TOKEN` | ASU OAuth refresh token (auto-rotated by mcp_client.py) |
@@ -105,14 +105,15 @@ python3 agent.py --message "Add job history for Sarah Chen: Senior Engineer at A
 
 ## Available Tools
 
-| Tool | WID | Status |
-|---|---|---|
-| `getWorkers` (+ `searchForWorker`, `getMyInfo`) | 94914bb1185d10000de91f2013e70032 | Placeholder — register in Workday |
-| `manageJobHistory` | 939b097c68df100015371634996f0000 | Placeholder — register in Workday |
+| Tool | Description |
+|---|---|
+| `getWorkers` (+ `searchForWorker`, `getMyInfo`) | Look up workers by name or browse the workforce |
+| `manageJobHistory` | Add or update job history entries for a worker |
 
-> Tool registration must be completed in Workday before the agent can make calls.
-> Once registered and activated, run `python3 agent.py` — it will call `tools/list`
-> at startup and print the confirmed schemas.
+> Tool WIDs are tenant-specific and are assigned when you register the agent resources
+> in your Workday tenant. Obtain them from your Workday administrator or the ASOR API
+> response. Once registered and activated, run `python3 agent.py` — it will call
+> `tools/list` at startup to confirm the available schemas.
 
 ---
 

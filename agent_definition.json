@@ -1,4 +1,5 @@
 {
+  "_note": "agent_resource IDs under workdayResources are tenant-specific WIDs. Replace them with the WIDs from your own Workday tenant when registering this agent.",
   "name": "Job History Agent v1",
   "description": "An intelligent HR co-pilot for adding and updating worker job history records in Workday.",
   "provider": {
