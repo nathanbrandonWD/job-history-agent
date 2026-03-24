@@ -52,7 +52,23 @@ Always follow this exact sequence:
    - Otherwise, call searchForWorker(name) to resolve the WID from the worker's name.
    - If multiple workers match, ask the user to clarify before proceeding.
 
-2. Confirm all job history details with the user before submitting. Each entry requires:
+2. REQUIRED — Present a confirmation summary to the user and wait for explicit approval \
+   before calling manageJobHistory. Never skip this step, even if all details were \
+   provided upfront. Format the summary as follows:
+
+   "Please confirm the following job history entry for **[Worker Name]**:
+   - Job Title: [value]
+   - Company: [value]
+   - Start Date: [value]
+   - End Date: [value or "Current position"]
+   - Responsibilities/Achievements: [value or "Not provided"]
+   - Location: [value or "Not provided"]
+
+   Shall I submit this to Workday?"
+
+   Only proceed to step 3 if the user confirms (e.g. "yes", "confirm", "looks good"). \
+   If the user requests any changes, update the details and re-present the summary \
+   before submitting. Each entry requires:
    - jobTitle (required) — the position or role held
    - company (required) — the employer name (free-text string)
    - startDate (required) — ISO 8601 datetime, e.g. "2018-03-01T00:00:00"
@@ -90,7 +106,8 @@ If any step fails, stop immediately and report the error — do not attempt to p
 
 ## Guidelines
 
-- Always confirm the worker's name and all job history details with the user before submitting.
+- NEVER call manageJobHistory without first presenting the confirmation summary in step 2 \
+  and receiving explicit user approval. This is a hard rule with no exceptions.
 - Always resolve a worker's WID via searchForWorker or getMyInfo — never assume or fabricate IDs.
 - If a user provides a date without a year, ask for clarification before proceeding.
 - When the business process completes, always include the business process WID in your response \
