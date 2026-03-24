@@ -4,6 +4,7 @@ Handles JSON-RPC 2.0 communication with the Workday MCP endpoint,
 including OAuth 2.0 token management with automatic refresh.
 """
 
+import logging
 import os
 import re
 import time
@@ -14,6 +15,8 @@ warnings.filterwarnings("ignore", category=Warning, module="urllib3")
 
 import requests
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # Path to .env file — same directory as this script
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -28,9 +31,12 @@ def _update_env_value(key: str, value: str) -> None:
     # Replace existing key=value line (handles quoted and unquoted values)
     pattern = rf"^({re.escape(key)}=).*$"
     updated = re.sub(pattern, rf"\g<1>{value}", contents, flags=re.MULTILINE)
+    if updated == contents:
+        # Key not found — append it
+        updated = contents.rstrip() + f"\n{key}={value}\n"
     with open(_ENV_PATH, "w") as f:
         f.write(updated)
-    print(f"[mcp_client] .env updated: {key} rotated")
+    logger.info(".env updated: %s rotated", key)
 
 # ── OAuth endpoints ─────────────────────────────────────────────────────────
 AUTH_TOKEN_URL = "https://us.agent.workday.com/auth/oauth2/{tenant}/token"
@@ -67,33 +73,46 @@ class WorkdayMCPClient:
     # ── Token management ────────────────────────────────────────────────────
 
     def _refresh_access_token(self) -> None:
-        """Exchange refresh_token for a new access_token."""
+        """Exchange refresh_token for a new access_token. Retries once on failure."""
         url = AUTH_TOKEN_URL.format(tenant=self.tenant)
-        resp = requests.post(
-            url,
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": self.refresh_token,
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
+        last_exc: Optional[Exception] = None
 
-        self._access_token = payload["access_token"]
-        # Workday access tokens expire in 600 s; refresh 60 s early
-        expires_in = int(payload.get("expires_in", 600))
-        self._token_expires_at = time.time() + expires_in - 60
+        for attempt in range(2):
+            try:
+                resp = requests.post(
+                    url,
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": self.refresh_token,
+                        "client_id": self.client_id,
+                        "client_secret": self.client_secret,
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                payload = resp.json()
 
-        # Workday rotates refresh tokens — update in memory AND persist to .env
-        if "refresh_token" in payload:
-            self.refresh_token = payload["refresh_token"]
-            _update_env_value("ASU_REFRESH_TOKEN", self.refresh_token)
+                self._access_token = payload["access_token"]
+                # Workday access tokens expire in 600 s; refresh 60 s early
+                expires_in = int(payload.get("expires_in", 600))
+                self._token_expires_at = time.time() + expires_in - 60
 
-        print(f"[mcp_client] Access token refreshed, valid for ~{expires_in}s")
+                # Workday rotates refresh tokens — update in memory AND persist to .env
+                if "refresh_token" in payload:
+                    self.refresh_token = payload["refresh_token"]
+                    _update_env_value("ASU_REFRESH_TOKEN", self.refresh_token)
+
+                logger.info("Access token refreshed, valid for ~%ss", expires_in)
+                return
+
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0:
+                    logger.warning("Token refresh failed (attempt 1), retrying in 2s: %s", exc)
+                    time.sleep(2)
+
+        raise RuntimeError(f"Token refresh failed after 2 attempts: {last_exc}") from last_exc
 
     def _get_token(self) -> str:
         if time.time() >= self._token_expires_at:
@@ -148,7 +167,7 @@ class WorkdayMCPClient:
         Returns:
             The tool result (structure varies by tool)
         """
-        print(f"[mcp_client] Calling tool: {tool_name}")
+        logger.info("Calling tool: %s", tool_name)
         return self._rpc(
             "tools/call",
             {"name": tool_name, "arguments": arguments},

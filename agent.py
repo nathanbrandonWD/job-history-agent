@@ -9,6 +9,7 @@ Usage:
 
 import argparse
 import json
+import logging
 import time
 from typing import Any, Optional
 
@@ -25,9 +26,14 @@ from config import (
 from mcp_client import WorkdayMCPClient
 from openai import AzureOpenAI
 
+logger = logging.getLogger(__name__)
+
+# Maximum agentic loop iterations per request (guards against runaway loops)
+MAX_ITERATIONS = 10
+
 # ── System Prompt ────────────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are the Job History Agent, an intelligent HR co-pilot designed to \
+_SYSTEM_PROMPT_BASE = """You are the Job History Agent, an intelligent HR co-pilot designed to \
 help People Managers and HR teams manage worker job history records in Workday. Your purpose \
 is to accurately capture and maintain the professional history of workers by leveraging \
 Workday's Job History management tools.
@@ -35,16 +41,7 @@ Workday's Job History management tools.
 Tone: Professional, accurate, and thorough. You handle sensitive employee career data, \
 so maintain confidentiality and precision in every interaction.
 
-## Available Tools
-
-- searchForWorker(name) — look up a worker by name; returns WID and profile info.
-- getWorkers(dataSource, where, orderBy, limit, offset) — browse or filter workers. \
-  Use the workerSearchFilter data source for name-based searches, or \
-  workersForHCMReporting / indexedAllWorkers for broader queries.
-- getMyInfo() — retrieve profile info for the currently authenticated user. \
-  Use this when the user says "me", "myself", or "my own" record.
-- manageJobHistory(input) — add or update one or more job history entries for a worker. \
-  Submits the Manage Job History business process in Workday.
+{tools_section}
 
 ## Workflow: Adding or Updating Job History
 
@@ -106,6 +103,19 @@ If any step fails, stop immediately and report the error — do not attempt to p
 The following are not supported — tell the user to use the Workday UI directly:
 - Deleting job history entries
 - Viewing existing job history records"""
+
+
+def _build_system_prompt(mcp_tools: list[dict]) -> str:
+    """Build the system prompt with the Available Tools section derived from fetched tools."""
+    if mcp_tools:
+        lines = ["## Available Tools", ""]
+        for t in mcp_tools:
+            desc = t.get("description", "No description available.")
+            lines.append(f"- {t['name']} — {desc}")
+        tools_section = "\n".join(lines)
+    else:
+        tools_section = "## Available Tools\n\n(No tools currently available.)"
+    return _SYSTEM_PROMPT_BASE.format(tools_section=tools_section)
 
 
 # ── Trace helpers ────────────────────────────────────────────────────────────
@@ -179,12 +189,14 @@ class JobHistoryAgent:
         )
 
         # Fetch available tools once at startup
-        print("[agent] Fetching available MCP tools...")
+        logger.info("Fetching available MCP tools...")
         self.mcp_tools_raw = self.mcp.list_tools()
         self.tools = mcp_tools_to_openai(self.mcp_tools_raw)
-        print(
-            f"[agent] {len(self.tools)} tools available: "
-            f"{', '.join(t['function']['name'] for t in self.tools)}"
+        self.system_prompt = _build_system_prompt(self.mcp_tools_raw)
+        logger.info(
+            "%d tools available: %s",
+            len(self.tools),
+            ", ".join(t["function"]["name"] for t in self.tools),
         )
 
     def _execute_tool_call(self, tool_name: str, tool_input: dict) -> Any:
@@ -194,16 +206,16 @@ class JobHistoryAgent:
             result_str = (
                 json.dumps(result, indent=2) if not isinstance(result, str) else result
             )
-            print(f"[agent] Tool result ({tool_name}): {result_str[:2000]}")
+            logger.info("Tool result (%s): %s", tool_name, result_str[:2000])
             return result_str
         except Exception as exc:
             error_msg = f"Error calling {tool_name}: {exc}"
-            print(f"[agent] {error_msg}")
+            logger.error(error_msg)
             return error_msg
 
     def chat(
         self, user_message: str, conversation_history: Optional[list] = None
-    ) -> tuple[str, list[str], dict]:
+    ) -> tuple[str, list[str], dict, list[dict]]:
         """
         Run a single turn of the agentic loop.
 
@@ -212,7 +224,10 @@ class JobHistoryAgent:
             conversation_history: Optional prior messages for multi-turn context.
 
         Returns:
-            Tuple of (response_text, tools_used, trace).
+            Tuple of (response_text, tools_used, trace, updated_history).
+            updated_history includes all messages from this turn (user, assistant,
+            tool calls, and tool results) appended to conversation_history, so the
+            caller can pass it back unchanged on the next turn.
             trace contains timing spans for each LLM call and tool call.
         """
         request_start = time.time()
@@ -220,17 +235,17 @@ class JobHistoryAgent:
         tools_used: list[str] = []
         iteration = 0
 
-        messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
         messages.extend(conversation_history or [])
         messages.append({"role": "user", "content": user_message})
 
-        while True:
+        while iteration < MAX_ITERATIONS:
             iteration += 1
             llm_t0 = time.time()
             llm_start_offset = llm_t0 - request_start
 
             response = self.llm.chat.completions.create(
-                model=AZURE_OPENAI_DEPLOYMENT_NAME,
+                model=AZURE_OPENAI_DEPLOYMENT_NAME,  # Azure deployment name, not model family
                 messages=messages,
                 tools=self.tools,
                 tool_choice="auto",
@@ -286,35 +301,37 @@ class JobHistoryAgent:
                     "tool_calls": sum(1 for s in spans if s["type"] == "tool_call"),
                     "spans": spans,
                 }
-                return assistant_message.content or "", tools_used, trace
+                return assistant_message.content or "", tools_used, trace, messages[1:]
 
             # ── If the model wants to call tools, execute them all ──
             if choice.finish_reason == "tool_calls" and assistant_message.tool_calls:
                 for tc in assistant_message.tool_calls:
                     tool_name = tc.function.name
-                    tool_input = json.loads(tc.function.arguments)
-                    tools_used.append(tool_name)
+                    logger.info("Tool call: %s(%s)", tool_name, _truncate(tc.function.arguments, 120))
 
-                    print(
-                        f"[agent] Tool call: {tool_name}("
-                        f"{tc.function.arguments[:120]}...)"
-                    )
+                    try:
+                        tool_input = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError as exc:
+                        tool_input = {}
+                        result_content = f"Error: could not parse tool arguments as JSON: {exc}"
+                        logger.error("Invalid tool arguments for %s: %s", tool_name, exc)
+                    else:
+                        tools_used.append(tool_name)
+                        tool_t0 = time.time()
+                        tool_start_offset = tool_t0 - request_start
+                        result_content = self._execute_tool_call(tool_name, tool_input)
+                        tool_duration_ms = int((time.time() - tool_t0) * 1000)
 
-                    tool_t0 = time.time()
-                    tool_start_offset = tool_t0 - request_start
-                    result_content = self._execute_tool_call(tool_name, tool_input)
-                    tool_duration_ms = int((time.time() - tool_t0) * 1000)
-
-                    spans.append({
-                        "type": "tool_call",
-                        "name": tool_name,
-                        "iteration": iteration,
-                        "start_time": tool_start_offset,
-                        "duration_ms": tool_duration_ms,
-                        "input": tool_input,
-                        "output": _truncate(result_content, 3000),
-                        "status": _tool_status(result_content),
-                    })
+                        spans.append({
+                            "type": "tool_call",
+                            "name": tool_name,
+                            "iteration": iteration,
+                            "start_time": tool_start_offset,
+                            "duration_ms": tool_duration_ms,
+                            "input": tool_input,
+                            "output": _truncate(result_content, 3000),
+                            "status": _tool_status(result_content),
+                        })
 
                     messages.append(
                         {
@@ -327,13 +344,16 @@ class JobHistoryAgent:
                 # Loop back so the model can reason over the tool results
                 continue
 
-            # Unexpected finish_reason — break to avoid infinite loop
-            print(f"[agent] Unexpected finish_reason: {choice.finish_reason}")
+            # Unexpected finish_reason — break to avoid hanging
+            logger.warning("Unexpected finish_reason: %s", choice.finish_reason)
             break
+
+        if iteration >= MAX_ITERATIONS:
+            logger.error("Agent loop hit MAX_ITERATIONS (%d) — aborting", MAX_ITERATIONS)
 
         total_ms = int((time.time() - request_start) * 1000)
         trace = {"total_duration_ms": total_ms, "llm_calls": 0, "tool_calls": 0, "spans": spans}
-        return "[Agent loop ended unexpectedly]", tools_used, trace
+        return "[Agent loop ended unexpectedly]", tools_used, trace, messages[1:]
 
     def run_interactive(self) -> None:
         """Simple interactive CLI session for testing."""
@@ -359,13 +379,11 @@ class JobHistoryAgent:
                 continue
 
             print("\nAgent: ", end="", flush=True)
-            reply, _, _ = self.chat(user_input, history)
+            reply, _, _, history = self.chat(user_input, history)
             print(reply)
             print()
 
-            # Maintain a rolling conversation window (last 20 turns)
-            history.append({"role": "user", "content": user_input})
-            history.append({"role": "assistant", "content": reply})
+            # Maintain a rolling conversation window (last 40 messages / ~20 turns)
             if len(history) > 40:
                 history = history[-40:]
 
@@ -373,6 +391,11 @@ class JobHistoryAgent:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
     parser = argparse.ArgumentParser(description="Job History Agent")
     parser.add_argument(
         "--message",
@@ -386,7 +409,7 @@ if __name__ == "__main__":
 
     if args.message:
         print(f"\nUser: {args.message}\n")
-        reply, _, _ = agent.chat(args.message)
+        reply, _, _, _ = agent.chat(args.message)
         print(f"Agent: {reply}")
     else:
         agent.run_interactive()
